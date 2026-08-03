@@ -64,7 +64,6 @@ chmod +x build_app.sh
 
 ```text
 outputs/像素变化点击器.app
-outputs/像素变化点击器.zip
 ```
 
 ## 项目结构

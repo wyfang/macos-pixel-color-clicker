@@ -39,5 +39,4 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 PLIST
 
 codesign --force --deep --sign - "$APP_DIR"
-ditto -c -k --sequesterRsrc --keepParent "$APP_DIR" "$OUTPUT_DIR/像素变化点击器.zip"
 echo "$APP_DIR"
