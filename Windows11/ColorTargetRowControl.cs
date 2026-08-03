@@ -6,12 +6,16 @@ internal sealed class ColorTargetRowControl : UserControl
     private readonly TextBox _colorTextBox;
     private readonly Panel _previewPanel;
     private readonly NumericUpDown _delayInput;
+    private readonly NumericUpDown _clickCountInput;
+    private readonly NumericUpDown _intervalInput;
     internal readonly Button PickButton;
     internal readonly Button DeleteButton;
 
     internal Guid Id { get; } = Guid.NewGuid();
     internal string ColorText => _colorTextBox.Text.Trim();
     internal int DelayMilliseconds => decimal.ToInt32(_delayInput.Value);
+    internal int ClickCount => decimal.ToInt32(_clickCountInput.Value);
+    internal int IntervalMilliseconds => decimal.ToInt32(_intervalInput.Value);
 
     internal event EventHandler? DeleteRequested;
     internal event EventHandler? PickRequested;
@@ -19,7 +23,7 @@ internal sealed class ColorTargetRowControl : UserControl
     internal ColorTargetRowControl(string initialColor = "#66D169")
     {
         Height = 38;
-        Width = 525;
+        Width = 680;
         Margin = new Padding(0, 2, 0, 2);
 
         var row = new FlowLayoutPanel
@@ -79,6 +83,41 @@ internal sealed class ColorTargetRowControl : UserControl
             TextAlign = ContentAlignment.MiddleLeft,
             Margin = new Padding(0, 3, 5, 0)
         };
+        _clickCountInput = new NumericUpDown
+        {
+            Minimum = 1,
+            Maximum = 100,
+            Value = 1,
+            Width = 54,
+            TextAlign = HorizontalAlignment.Right,
+            Margin = new Padding(0, 3, 2, 0)
+        };
+        var countLabel = new Label
+        {
+            Text = "次",
+            Width = 25,
+            Height = 28,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Margin = new Padding(0, 3, 5, 0)
+        };
+        _intervalInput = new NumericUpDown
+        {
+            Minimum = 0,
+            Maximum = 60_000,
+            Value = 100,
+            Width = 72,
+            ThousandsSeparator = true,
+            TextAlign = HorizontalAlignment.Right,
+            Margin = new Padding(0, 3, 2, 0)
+        };
+        var intervalLabel = new Label
+        {
+            Text = "ms",
+            Width = 28,
+            Height = 28,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Margin = new Padding(0, 3, 5, 0)
+        };
         DeleteButton = new Button
         {
             Text = "−",
@@ -89,7 +128,8 @@ internal sealed class ColorTargetRowControl : UserControl
 
         row.Controls.AddRange([
             _numberLabel, _colorTextBox, _previewPanel, PickButton,
-            _delayInput, millisecondsLabel, DeleteButton
+            _delayInput, millisecondsLabel, _clickCountInput, countLabel,
+            _intervalInput, intervalLabel, DeleteButton
         ]);
         Controls.Add(row);
 
@@ -105,6 +145,8 @@ internal sealed class ColorTargetRowControl : UserControl
     {
         _colorTextBox.Enabled = enabled;
         _delayInput.Enabled = enabled;
+        _clickCountInput.Enabled = enabled;
+        _intervalInput.Enabled = enabled;
         PickButton.Enabled = enabled;
         DeleteButton.Enabled = enabled && canDelete;
     }
@@ -119,7 +161,11 @@ internal sealed class ColorTargetRowControl : UserControl
     {
         if (ColorUtilities.TryParseHex(ColorText, out Color color))
         {
-            target = new ColorTarget(Id, color, DelayMilliseconds);
+            target = new ColorTarget(
+                Id,
+                color,
+                new ClickPlan(DelayMilliseconds, ClickCount, IntervalMilliseconds)
+            );
             return true;
         }
 
@@ -135,7 +181,8 @@ internal sealed class ColorTargetRowControl : UserControl
     }
 }
 
-internal readonly record struct ColorTarget(Guid Id, Color Color, int DelayMilliseconds);
+internal readonly record struct ColorTarget(Guid Id, Color Color, ClickPlan Plan);
+internal readonly record struct ClickPlan(int DelayMilliseconds, int ClickCount, int IntervalMilliseconds);
 
 internal static class ColorUtilities
 {

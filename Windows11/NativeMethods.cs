@@ -37,7 +37,12 @@ internal static class NativeMethods
     internal static bool IsKeyDown(int virtualKey) => (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
 
     internal static Color? ReadScreenPixel(POINT point)
+        => ReadScreenRegion(point, 1);
+
+    internal static Color? ReadScreenRegion(POINT center, int size)
     {
+        int safeSize = Math.Clamp(size, 1, 10);
+        int offset = safeSize / 2;
         IntPtr dc = GetDC(IntPtr.Zero);
         if (dc == IntPtr.Zero)
         {
@@ -46,16 +51,28 @@ internal static class NativeMethods
 
         try
         {
-            uint value = GetPixel(dc, point.X, point.Y);
-            if (value == CLR_INVALID)
+            long red = 0;
+            long green = 0;
+            long blue = 0;
+            int count = 0;
+            for (int y = 0; y < safeSize; y++)
             {
-                return null;
+                for (int x = 0; x < safeSize; x++)
+                {
+                    uint value = GetPixel(dc, center.X - offset + x, center.Y - offset + y);
+                    if (value == CLR_INVALID)
+                    {
+                        continue;
+                    }
+                    red += (int)(value & 0xFF);
+                    green += (int)((value >> 8) & 0xFF);
+                    blue += (int)((value >> 16) & 0xFF);
+                    count++;
+                }
             }
-
-            int red = (int)(value & 0xFF);
-            int green = (int)((value >> 8) & 0xFF);
-            int blue = (int)((value >> 16) & 0xFF);
-            return Color.FromArgb(red, green, blue);
+            return count == 0
+                ? null
+                : Color.FromArgb((int)(red / count), (int)(green / count), (int)(blue / count));
         }
         finally
         {

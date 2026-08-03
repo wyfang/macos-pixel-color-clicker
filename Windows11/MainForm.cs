@@ -8,6 +8,11 @@ internal sealed class MainForm : Form
     private readonly Label _positionLabel;
     private readonly ComboBox _modeCombo;
     private readonly Panel _targetSection;
+    private readonly Panel _changeSection;
+    private ComboBox _regionSizeCombo = null!;
+    private NumericUpDown _changeDelayInput = null!;
+    private NumericUpDown _changeCountInput = null!;
+    private NumericUpDown _changeIntervalInput = null!;
     private FlowLayoutPanel _colorRowsPanel = null!;
     private Button _addColorButton = null!;
     private readonly NumericUpDown _toleranceInput;
@@ -33,13 +38,15 @@ internal sealed class MainForm : Form
     private long _lastChangeTimestamp;
     private long _lastColorDisplayTimestamp;
     private CancellationTokenSource? _pendingClickCancellation;
+    private CancellationTokenSource? _clickSequenceCancellation;
+    private ClickPlan _activeChangePlan = new(0, 1, 100);
 
     internal MainForm()
     {
         Text = "屏幕颜色触发点击器";
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(590, 710);
-        MinimumSize = new Size(606, 749);
+        ClientSize = new Size(760, 790);
+        MinimumSize = new Size(776, 829);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         KeyPreview = true;
@@ -59,7 +66,7 @@ internal sealed class MainForm : Form
         {
             Text = "屏幕颜色触发点击",
             Font = new Font(Font.FontFamily, 16F, FontStyle.Bold),
-            Width = 540,
+            Width = 710,
             Height = 38,
             TextAlign = ContentAlignment.MiddleLeft
         };
@@ -88,6 +95,13 @@ internal sealed class MainForm : Form
         modeRow.Controls.Add(_modeCombo);
 
         _targetSection = BuildTargetSection();
+        _changeSection = BuildChangeSection(
+            out _regionSizeCombo,
+            out _changeDelayInput,
+            out _changeCountInput,
+            out _changeIntervalInput
+        );
+        _changeSection.Visible = false;
 
         var toleranceRow = CreateRow("颜色容差");
         _toleranceInput = new NumericUpDown
@@ -121,7 +135,7 @@ internal sealed class MainForm : Form
         _currentColorLabel = new Label
         {
             Text = "当前位置颜色：—",
-            Width = 540,
+            Width = 710,
             Height = 26,
             Font = new Font("Consolas", 9.5F),
             ForeColor = SystemColors.GrayText,
@@ -136,13 +150,13 @@ internal sealed class MainForm : Form
         _statusLabel = new Label
         {
             Text = "点击“选择位置”，移动鼠标后按 Enter 确认",
-            Width = 540,
+            Width = 710,
             Height = 52,
             ForeColor = SystemColors.GrayText
         };
 
         root.Controls.AddRange([
-            title, positionRow, modeRow, _targetSection, toleranceRow,
+            title, positionRow, modeRow, _targetSection, _changeSection, toleranceRow,
             clickRow, _currentColorLabel, _startButton, _statusLabel
         ]);
         Controls.Add(root);
@@ -164,6 +178,7 @@ internal sealed class MainForm : Form
 
     private int Tolerance => decimal.ToInt32(_toleranceInput.Value);
     private bool UsesTargetColors => _modeCombo.SelectedIndex == 0;
+    private int RegionSize => _regionSizeCombo.SelectedIndex + 1;
 
     private static FlowLayoutPanel CreateRow(string title)
     {
@@ -171,7 +186,7 @@ internal sealed class MainForm : Form
         {
             FlowDirection = FlowDirection.LeftToRight,
             WrapContents = false,
-            Width = 540,
+            Width = 710,
             Height = 40,
             Margin = new Padding(0, 3, 0, 3)
         };
@@ -189,13 +204,13 @@ internal sealed class MainForm : Form
     {
         var panel = new Panel
         {
-            Width = 540,
+            Width = 710,
             Height = 242,
             Margin = new Padding(0, 2, 0, 4)
         };
         var header = new Label
         {
-            Text = "目标颜色                                       延时（毫秒）",
+            Text = "目标颜色                            延时（ms）    次数      点击间隔（ms）",
             Dock = DockStyle.Top,
             Height = 24,
             ForeColor = SystemColors.GrayText
@@ -224,6 +239,57 @@ internal sealed class MainForm : Form
         panel.Controls.Add(header);
         return panel;
     }
+
+    private Panel BuildChangeSection(
+        out ComboBox regionSize,
+        out NumericUpDown delay,
+        out NumericUpDown count,
+        out NumericUpDown interval)
+    {
+        var panel = new Panel { Width = 710, Height = 95, Margin = new Padding(0, 2, 0, 4) };
+        var sizeRow = CreateRow("采样区域");
+        regionSize = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 100 };
+        for (int size = 1; size <= 10; size++)
+        {
+            regionSize.Items.Add($"{size} × {size}");
+        }
+        regionSize.SelectedIndex = 0;
+        sizeRow.Controls.Add(regionSize);
+        sizeRow.Controls.Add(new Label
+        {
+            Text = "对区域内所有像素取平均颜色",
+            AutoSize = true,
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(8, 7, 0, 0)
+        });
+
+        var actionRow = CreateRow("变化后操作");
+        actionRow.Controls.Add(new Label { Text = "延时", AutoSize = true, Margin = new Padding(0, 7, 3, 0) });
+        delay = MakeNumberInput(0, 0, 60_000, 76);
+        actionRow.Controls.Add(delay);
+        actionRow.Controls.Add(new Label { Text = "ms   点击", AutoSize = true, Margin = new Padding(3, 7, 3, 0) });
+        count = MakeNumberInput(1, 1, 100, 58);
+        actionRow.Controls.Add(count);
+        actionRow.Controls.Add(new Label { Text = "次   间隔", AutoSize = true, Margin = new Padding(3, 7, 3, 0) });
+        interval = MakeNumberInput(100, 0, 60_000, 76);
+        actionRow.Controls.Add(interval);
+        actionRow.Controls.Add(new Label { Text = "ms", AutoSize = true, Margin = new Padding(3, 7, 0, 0) });
+
+        panel.Controls.Add(actionRow);
+        panel.Controls.Add(sizeRow);
+        actionRow.Top = 42;
+        return panel;
+    }
+
+    private static NumericUpDown MakeNumberInput(int value, int minimum, int maximum, int width) => new()
+    {
+        Minimum = minimum,
+        Maximum = maximum,
+        Value = value,
+        Width = width,
+        ThousandsSeparator = true,
+        TextAlign = HorizontalAlignment.Right
+    };
 
     private void AddColorRow(string initialColor)
     {
@@ -268,9 +334,10 @@ internal sealed class MainForm : Form
     private void UpdateMode()
     {
         _targetSection.Visible = UsesTargetColors;
+        _changeSection.Visible = !UsesTargetColors;
         _statusLabel.Text = UsesTargetColors
-            ? "可添加多个颜色，并分别设置识别后的点击延时"
-            : "开始监控时会记录当前位置颜色，变化超过容差后点击";
+            ? "每个颜色可分别设置延时、点击次数和点击间隔"
+            : "可设置采样区域、延时、点击次数和点击间隔";
     }
 
     private void BeginSelectingPosition()
@@ -376,8 +443,17 @@ internal sealed class MainForm : Form
                 _activeTargets.Add(target);
             }
         }
+        else
+        {
+            _activeChangePlan = new ClickPlan(
+                decimal.ToInt32(_changeDelayInput.Value),
+                decimal.ToInt32(_changeCountInput.Value),
+                decimal.ToInt32(_changeIntervalInput.Value)
+            );
+        }
 
-        if (NativeMethods.ReadScreenPixel(_selectedPoint.Value) is null)
+        int regionSize = UsesTargetColors ? 1 : RegionSize;
+        if (NativeMethods.ReadScreenRegion(_selectedPoint.Value, regionSize) is null)
         {
             _statusLabel.Text = "无法读取监控位置的屏幕颜色";
             return;
@@ -414,7 +490,8 @@ internal sealed class MainForm : Form
 
     private void ActivateMonitoring()
     {
-        if (_selectedPoint is null || NativeMethods.ReadScreenPixel(_selectedPoint.Value) is not { } current)
+        int regionSize = UsesTargetColors ? 1 : RegionSize;
+        if (_selectedPoint is null || NativeMethods.ReadScreenRegion(_selectedPoint.Value, regionSize) is not { } current)
         {
             StopAll("无法读取屏幕颜色");
             return;
@@ -432,14 +509,15 @@ internal sealed class MainForm : Form
         _startButton.Text = "停止监控";
         _statusLabel.Text = UsesTargetColors
             ? $"正在监控 {_activeTargets.Count} 个目标颜色… 按 Esc 停止"
-            : $"正在检测像素变化，容差 ±{Tolerance}… 按 Esc 停止";
+            : $"正在检测 {regionSize}×{regionSize} 区域变化，容差 ±{Tolerance}… 按 Esc 停止";
         _pollTimer.Start();
     }
 
     private void PollPixel()
     {
+        int regionSize = UsesTargetColors ? 1 : RegionSize;
         if (!_isMonitoring || _selectedPoint is null ||
-            NativeMethods.ReadScreenPixel(_selectedPoint.Value) is not { } current)
+            NativeMethods.ReadScreenRegion(_selectedPoint.Value, regionSize) is not { } current)
         {
             return;
         }
@@ -491,37 +569,51 @@ internal sealed class MainForm : Form
         }
 
         CancelPendingClick();
+        CancelClickSequence();
         _lastMatchedTargetId = target.Id;
         ScheduleTargetClick(target);
     }
 
     private async void ScheduleTargetClick(ColorTarget target)
     {
-        _pendingClickCancellation = new CancellationTokenSource();
-        CancellationToken token = _pendingClickCancellation.Token;
-        if (target.DelayMilliseconds > 0)
+        CancellationTokenSource cancellation = new();
+        _pendingClickCancellation = cancellation;
+        CancellationToken token = cancellation.Token;
+        bool shouldStart = false;
+        try
         {
-            _statusLabel.Text = $"匹配 {ColorUtilities.ToHex(target.Color)}，保持 {target.DelayMilliseconds} ms 后点击";
-            try
+            if (target.Plan.DelayMilliseconds > 0)
             {
-                await Task.Delay(target.DelayMilliseconds, token);
+                _statusLabel.Text = $"匹配 {ColorUtilities.ToHex(target.Color)}，保持 {target.Plan.DelayMilliseconds} ms 后点击";
+                await Task.Delay(target.Plan.DelayMilliseconds, token);
             }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
-        }
 
-        if (token.IsCancellationRequested || !_isMonitoring || _selectedPoint is null ||
-            _lastMatchedTargetId != target.Id ||
-            NativeMethods.ReadScreenPixel(_selectedPoint.Value) is not { } current ||
-            !ColorUtilities.IsWithin(current, target.Color, Tolerance))
+            shouldStart = !token.IsCancellationRequested && _isMonitoring && _selectedPoint is not null &&
+                _lastMatchedTargetId == target.Id &&
+                NativeMethods.ReadScreenPixel(_selectedPoint.Value) is { } current &&
+                ColorUtilities.IsWithin(current, target.Color, Tolerance);
+        }
+        catch (OperationCanceledException)
         {
             return;
         }
+        finally
+        {
+            if (ReferenceEquals(_pendingClickCancellation, cancellation))
+            {
+                _pendingClickCancellation = null;
+            }
+            cancellation.Dispose();
+        }
 
-        PerformClick();
-        _statusLabel.Text = $"已匹配 {ColorUtilities.ToHex(target.Color)}，延时 {target.DelayMilliseconds} ms 后完成点击";
+        if (!shouldStart)
+        {
+            return;
+        }
+        _ = RunClickSequenceAsync(
+            target.Plan,
+            $"已匹配 {ColorUtilities.ToHex(target.Color)}，完成 {target.Plan.ClickCount} 次点击"
+        );
     }
 
     private void PollPixelChange(Color current, long now)
@@ -536,17 +628,98 @@ internal sealed class MainForm : Form
         {
             if (_changeArmed)
             {
-                PerformClick();
-                _statusLabel.Text = "检测到像素变化，已点击；等待颜色稳定";
+                _changeArmed = false;
+                ScheduleChangeClick();
             }
             _baselineColor = current;
-            _changeArmed = false;
             _lastChangeTimestamp = now;
         }
-        else if (!_changeArmed && Stopwatch.GetElapsedTime(_lastChangeTimestamp, now) >= TimeSpan.FromMilliseconds(250))
+        else if (!_changeArmed && _pendingClickCancellation is null && _clickSequenceCancellation is null &&
+                 Stopwatch.GetElapsedTime(_lastChangeTimestamp, now) >= TimeSpan.FromMilliseconds(250))
         {
             _changeArmed = true;
             _statusLabel.Text = "颜色已稳定，继续监控… 按 Esc 停止";
+        }
+    }
+
+    private async void ScheduleChangeClick()
+    {
+        CancelPendingClick();
+        CancellationTokenSource cancellation = new();
+        _pendingClickCancellation = cancellation;
+        CancellationToken token = cancellation.Token;
+        bool shouldStart = false;
+        try
+        {
+            if (_activeChangePlan.DelayMilliseconds > 0)
+            {
+                _statusLabel.Text = $"检测到像素变化，{_activeChangePlan.DelayMilliseconds} ms 后点击";
+                await Task.Delay(_activeChangePlan.DelayMilliseconds, token);
+            }
+
+            shouldStart = !token.IsCancellationRequested && _isMonitoring && !UsesTargetColors;
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        finally
+        {
+            if (ReferenceEquals(_pendingClickCancellation, cancellation))
+            {
+                _pendingClickCancellation = null;
+            }
+            cancellation.Dispose();
+        }
+
+        if (!shouldStart)
+        {
+            return;
+        }
+        _lastChangeTimestamp = Stopwatch.GetTimestamp();
+        _ = RunClickSequenceAsync(
+            _activeChangePlan,
+            $"像素变化触发，完成 {_activeChangePlan.ClickCount} 次点击"
+        );
+    }
+
+    private async Task RunClickSequenceAsync(ClickPlan plan, string completionMessage)
+    {
+        CancelClickSequence();
+        CancellationTokenSource cancellation = new();
+        _clickSequenceCancellation = cancellation;
+        CancellationToken token = cancellation.Token;
+        try
+        {
+            for (int index = 1; index <= plan.ClickCount; index++)
+            {
+                if (index > 1 && plan.IntervalMilliseconds > 0)
+                {
+                    await Task.Delay(plan.IntervalMilliseconds, token);
+                }
+                token.ThrowIfCancellationRequested();
+                if (!_isMonitoring)
+                {
+                    return;
+                }
+                PerformClick();
+            }
+            if (!token.IsCancellationRequested)
+            {
+                _statusLabel.Text = completionMessage;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Esc, stop, or a newer trigger cancels the remaining clicks.
+        }
+        finally
+        {
+            if (ReferenceEquals(_clickSequenceCancellation, cancellation))
+            {
+                _clickSequenceCancellation = null;
+            }
+            cancellation.Dispose();
         }
     }
 
@@ -574,6 +747,7 @@ internal sealed class MainForm : Form
     private void StopAll(string message)
     {
         CancelPendingClick();
+        CancelClickSequence();
         _countdownTimer.Stop();
         _pollTimer.Stop();
         _isCountingDown = false;
@@ -590,9 +764,15 @@ internal sealed class MainForm : Form
 
     private void CancelPendingClick()
     {
-        _pendingClickCancellation?.Cancel();
-        _pendingClickCancellation?.Dispose();
+        CancellationTokenSource? cancellation = _pendingClickCancellation;
         _pendingClickCancellation = null;
+        cancellation?.Cancel();
+    }
+
+    private void CancelClickSequence()
+    {
+        _clickSequenceCancellation?.Cancel();
+        _clickSequenceCancellation = null;
     }
 
     private void SetControlsEnabled(bool enabled)
@@ -601,6 +781,10 @@ internal sealed class MainForm : Form
         _modeCombo.Enabled = enabled;
         _toleranceInput.Enabled = enabled;
         _clickLocationCombo.Enabled = enabled;
+        _regionSizeCombo.Enabled = enabled;
+        _changeDelayInput.Enabled = enabled;
+        _changeCountInput.Enabled = enabled;
+        _changeIntervalInput.Enabled = enabled;
         _addColorButton.Enabled = enabled;
         foreach (ColorTargetRowControl row in _colorRows)
         {
@@ -672,6 +856,7 @@ internal sealed class MainForm : Form
     {
         _lifetimeCancellation.Cancel();
         CancelPendingClick();
+        CancelClickSequence();
         _pollTimer.Dispose();
         _countdownTimer.Dispose();
         _lifetimeCancellation.Dispose();

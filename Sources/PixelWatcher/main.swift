@@ -7,6 +7,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     private var positionLabel: NSTextField!
     private var modePopup: NSPopUpButton!
     private var targetSection: NSStackView!
+    private var changeSection: NSStackView!
+    private var regionSizePopup: NSPopUpButton!
+    private var changeDelayField: NSTextField!
+    private var changeCountField: NSTextField!
+    private var changeIntervalField: NSTextField!
     private var colorScrollView: NSScrollView!
     private var colorDocumentView: FlippedView!
     private var colorListStack: NSStackView!
@@ -27,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     private var countdownTimer: DispatchSourceTimer?
     private var escapeWatchdog: DispatchSourceTimer?
     private var pendingClick: DispatchWorkItem?
+    private var clickSequenceID: UUID?
     private var localKeyMonitor: Any?
     private var globalKeyMonitor: Any?
     private var isSelecting = false
@@ -38,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     private var lastMatchedTargetID: UUID?
     private var lastChangeTime = Date.distantPast
     private var lastColorDisplay = Date.distantPast
+    private var activeChangePlan = ClickPlan(delayMilliseconds: 0, clickCount: 1, intervalMilliseconds: 100)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildUI()
@@ -56,7 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
 
     private func buildUI() {
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 470, height: 545),
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 650),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -108,6 +115,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         buildTargetSection()
         root.addArrangedSubview(targetSection)
 
+        buildChangeSection()
+        root.addArrangedSubview(changeSection)
+        changeSection.isHidden = true
+
         let toleranceRow = makeLabeledRow("颜色容差")
         toleranceField = NSTextField(labelWithString: "10")
         toleranceField.alignment = .right
@@ -158,12 +169,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         let header = NSStackView()
         header.orientation = .horizontal
         header.spacing = 8
-        let colorHeader = NSTextField(labelWithString: "目标颜色")
-        colorHeader.widthAnchor.constraint(equalToConstant: 235).isActive = true
+        let colorHeader = NSTextField(labelWithString: "目标颜色                         延时        次数       点击间隔")
+        colorHeader.widthAnchor.constraint(equalToConstant: 600).isActive = true
         header.addArrangedSubview(colorHeader)
-        let delayHeader = NSTextField(labelWithString: "延时（毫秒）")
-        delayHeader.textColor = .secondaryLabelColor
-        header.addArrangedSubview(delayHeader)
         targetSection.addArrangedSubview(header)
 
         let scroll = NSScrollView()
@@ -171,12 +179,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.borderType = .bezelBorder
-        scroll.widthAnchor.constraint(equalToConstant: 424).isActive = true
+        scroll.widthAnchor.constraint(equalToConstant: 674).isActive = true
         scroll.heightAnchor.constraint(equalToConstant: 145).isActive = true
 
-        let document = FlippedView(frame: NSRect(x: 0, y: 0, width: 410, height: 145))
+        let document = FlippedView(frame: NSRect(x: 0, y: 0, width: 660, height: 145))
         colorDocumentView = document
-        colorListStack = NSStackView(frame: NSRect(x: 7, y: 7, width: 396, height: 131))
+        colorListStack = NSStackView(frame: NSRect(x: 7, y: 7, width: 646, height: 131))
         colorListStack.orientation = .vertical
         colorListStack.alignment = .leading
         colorListStack.spacing = 5
@@ -187,7 +195,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         addColorButton = NSButton(title: "＋ 添加颜色", target: self, action: #selector(addColorRowAction))
         addColorButton.bezelStyle = .rounded
         targetSection.addArrangedSubview(addColorButton)
-        addColorRow(hex: "#66D169", delay: "0")
+        addColorRow(hex: "#66D169", delay: "0", count: "1", interval: "100")
+    }
+
+    private func buildChangeSection() {
+        changeSection = NSStackView()
+        changeSection.orientation = .vertical
+        changeSection.alignment = .leading
+        changeSection.spacing = 8
+
+        let sizeRow = makeLabeledRow("采样区域")
+        regionSizePopup = NSPopUpButton()
+        regionSizePopup.addItems(withTitles: (1...10).map { "\($0) × \($0)" })
+        sizeRow.addArrangedSubview(regionSizePopup)
+        let sizeHint = NSTextField(labelWithString: "对区域内所有像素取平均颜色")
+        sizeHint.textColor = .secondaryLabelColor
+        sizeRow.addArrangedSubview(sizeHint)
+        changeSection.addArrangedSubview(sizeRow)
+
+        let actionRow = makeLabeledRow("变化后操作")
+        actionRow.addArrangedSubview(NSTextField(labelWithString: "延时"))
+        changeDelayField = makeNumberField("0", width: 60)
+        actionRow.addArrangedSubview(changeDelayField)
+        actionRow.addArrangedSubview(NSTextField(labelWithString: "ms   点击"))
+        changeCountField = makeNumberField("1", width: 45)
+        actionRow.addArrangedSubview(changeCountField)
+        actionRow.addArrangedSubview(NSTextField(labelWithString: "次   间隔"))
+        changeIntervalField = makeNumberField("100", width: 60)
+        actionRow.addArrangedSubview(changeIntervalField)
+        actionRow.addArrangedSubview(NSTextField(labelWithString: "ms"))
+        changeSection.addArrangedSubview(actionRow)
+    }
+
+    private func makeNumberField(_ value: String, width: CGFloat) -> NSTextField {
+        let field = NSTextField(string: value)
+        field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        field.alignment = .right
+        field.widthAnchor.constraint(equalToConstant: width).isActive = true
+        return field
     }
 
     private func makeLabeledRow(_ title: String) -> NSStackView {
@@ -201,10 +246,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     }
 
     @objc private func addColorRowAction() {
-        addColorRow(hex: "#FFFFFF", delay: "0")
+        addColorRow(hex: "#FFFFFF", delay: "0", count: "1", interval: "100")
     }
 
-    private func addColorRow(hex: String, delay: String) {
+    private func addColorRow(hex: String, delay: String, count: String, interval: String) {
         let id = UUID()
         let container = NSStackView()
         container.orientation = .horizontal
@@ -236,12 +281,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         delayField.placeholderString = "0"
         delayField.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         delayField.alignment = .right
-        delayField.widthAnchor.constraint(equalToConstant: 72).isActive = true
+        delayField.widthAnchor.constraint(equalToConstant: 60).isActive = true
         container.addArrangedSubview(delayField)
 
         let msLabel = NSTextField(labelWithString: "ms")
         msLabel.textColor = .secondaryLabelColor
         container.addArrangedSubview(msLabel)
+
+        let countField = makeNumberField(count, width: 45)
+        container.addArrangedSubview(countField)
+        container.addArrangedSubview(NSTextField(labelWithString: "次"))
+
+        let intervalField = makeNumberField(interval, width: 60)
+        container.addArrangedSubview(intervalField)
+        let intervalLabel = NSTextField(labelWithString: "ms")
+        intervalLabel.textColor = .secondaryLabelColor
+        container.addArrangedSubview(intervalLabel)
 
         let deleteButton = NSButton(title: "−", target: self, action: #selector(deleteColorRow(_:)))
         deleteButton.bezelStyle = .circular
@@ -256,6 +311,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             colorWell: colorWell,
             pickButton: pickButton,
             delayField: delayField,
+            countField: countField,
+            intervalField: intervalField,
             deleteButton: deleteButton
         )
         colorRows.append(row)
@@ -331,13 +388,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     private func refreshColorRows() {
         for (index, row) in colorRows.enumerated() {
             row.numberLabel.stringValue = "颜色 \(index + 1)"
-            row.deleteButton.isEnabled = colorRows.count > 1 && !isMonitoring
+            row.deleteButton.isEnabled = colorRows.count > 1 && !isMonitoring && !isCountingDown
         }
     }
 
     private func updateColorListLayout(scrollToBottom: Bool) {
         guard colorScrollView != nil, colorDocumentView != nil else { return }
-        let visibleWidth = max(390, colorScrollView.contentSize.width)
+        let visibleWidth = max(640, colorScrollView.contentSize.width)
         let rowsHeight = CGFloat(colorRows.count * 29 + max(0, colorRows.count - 1) * 5)
         let documentHeight = max(colorScrollView.contentSize.height, rowsHeight + 14)
         colorDocumentView.frame = NSRect(x: 0, y: 0, width: visibleWidth, height: documentHeight)
@@ -353,9 +410,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     @objc private func modeChanged() {
         let usesTargetColors = modePopup.indexOfSelectedItem == 0
         targetSection.isHidden = !usesTargetColors
+        changeSection.isHidden = usesTargetColors
         statusLabel.stringValue = usesTargetColors
-            ? "可添加多个颜色，并分别设置识别后的点击延时"
-            : "开始监控时会记录当前位置颜色，变化超过容差后点击"
+            ? "每个颜色可分别设置延时、点击次数和点击间隔"
+            : "可设置采样区域、延时、点击次数和点击间隔"
     }
 
     @objc private func toleranceChanged() {
@@ -450,6 +508,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             activeTargets = targets
         } else {
             activeTargets = []
+            guard let plan = parseClickPlan(
+                delayText: changeDelayField.stringValue,
+                countText: changeCountField.stringValue,
+                intervalText: changeIntervalField.stringValue,
+                label: "像素变化"
+            ) else { return }
+            activeChangePlan = plan
         }
         guard CGPreflightScreenCaptureAccess() else {
             requestScreenPermission()
@@ -459,7 +524,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             statusLabel.stringValue = "请允许辅助功能权限，然后重新打开本工具"
             return
         }
-        guard let current = sampleColor(at: point) else {
+        let regionSize = usesTargetColors ? 1 : regionSizePopup.indexOfSelectedItem + 1
+        guard let current = sampleColor(at: point, size: regionSize) else {
             statusLabel.stringValue = "无法读取屏幕颜色，请检查屏幕录制权限"
             return
         }
@@ -495,15 +561,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     }
 
     private func activateMonitoring() {
-        guard let point = selectedPoint, let current = sampleColor(at: point) else {
+        let usesTargetColors = modePopup.indexOfSelectedItem == 0
+        let regionSize = usesTargetColors ? 1 : regionSizePopup.indexOfSelectedItem + 1
+        guard let point = selectedPoint, let current = sampleColor(at: point, size: regionSize) else {
             stopMonitoring(message: "无法读取屏幕颜色，请检查屏幕录制权限")
             return
         }
         countdownTimer?.cancel()
         countdownTimer = nil
         isCountingDown = false
-        let usesTargetColors = modePopup.indexOfSelectedItem == 0
-
         baselineColor = current
         armedForChange = true
         lastMatchedTargetID = nil
@@ -514,7 +580,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         startButton.title = "停止监控"
         statusLabel.stringValue = usesTargetColors
             ? "正在监控 \(activeTargets.count) 个目标颜色… 按 Esc 停止"
-            : "正在检测像素变化，容差 ±\(toleranceStepper.integerValue)… 按 Esc 停止"
+            : "正在检测 \(regionSize)×\(regionSize) 区域变化，容差 ±\(toleranceStepper.integerValue)… 按 Esc 停止"
 
         let source = DispatchSource.makeTimerSource(queue: .main)
         source.schedule(deadline: .now(), repeating: .milliseconds(8), leeway: .milliseconds(1))
@@ -542,14 +608,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
                 return nil
             }
             let delayText = row.delayField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let delay = Int(delayText), (0...60_000).contains(delay) else {
-                statusLabel.stringValue = "颜色 \(index + 1) 的延时应为 0–60000 毫秒"
-                NSSound.beep()
-                return nil
-            }
-            result.append(ColorTarget(id: row.id, color: color, delayMilliseconds: delay))
+            guard let plan = parseClickPlan(
+                delayText: delayText,
+                countText: row.countField.stringValue,
+                intervalText: row.intervalField.stringValue,
+                label: "颜色 \(index + 1)"
+            ) else { return nil }
+            result.append(ColorTarget(id: row.id, color: color, plan: plan))
         }
         return result
+    }
+
+    private func parseClickPlan(delayText: String, countText: String, intervalText: String, label: String) -> ClickPlan? {
+        guard let delay = Int(delayText.trimmingCharacters(in: .whitespacesAndNewlines)),
+              (0...60_000).contains(delay) else {
+            statusLabel.stringValue = "\(label)的延时应为 0–60000 毫秒"
+            NSSound.beep()
+            return nil
+        }
+        guard let count = Int(countText.trimmingCharacters(in: .whitespacesAndNewlines)),
+              (1...100).contains(count) else {
+            statusLabel.stringValue = "\(label)的点击次数应为 1–100"
+            NSSound.beep()
+            return nil
+        }
+        guard let interval = Int(intervalText.trimmingCharacters(in: .whitespacesAndNewlines)),
+              (0...60_000).contains(interval) else {
+            statusLabel.stringValue = "\(label)的点击间隔应为 0–60000 毫秒"
+            NSSound.beep()
+            return nil
+        }
+        return ClickPlan(delayMilliseconds: delay, clickCount: count, intervalMilliseconds: interval)
     }
 
     private func parseHexColor(_ input: String) -> PixelColor? {
@@ -565,8 +654,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     }
 
     private func pollPixel() {
+        let usesTargetColors = modePopup.indexOfSelectedItem == 0
+        let regionSize = usesTargetColors ? 1 : regionSizePopup.indexOfSelectedItem + 1
         guard isMonitoring, let point = selectedPoint,
-              let current = sampleColor(at: point) else { return }
+              let current = sampleColor(at: point, size: regionSize) else { return }
         if CGEventSource.keyState(.combinedSessionState, key: 53) {
             stopMonitoring(message: "已停止（Esc）")
             return
@@ -601,18 +692,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         pendingClick?.cancel()
         pendingClick = nil
         lastMatchedTargetID = matched.id
-        if matched.delayMilliseconds == 0 {
+        if matched.plan.delayMilliseconds == 0 {
             executeTargetClick(matched)
             return
         }
 
-        statusLabel.stringValue = "匹配 \(matched.color.hex)，保持 \(matched.delayMilliseconds) ms 后点击"
+        statusLabel.stringValue = "匹配 \(matched.color.hex)，保持 \(matched.plan.delayMilliseconds) ms 后点击"
         let work = DispatchWorkItem { [weak self] in
             self?.executeTargetClick(matched)
         }
         pendingClick = work
         DispatchQueue.main.asyncAfter(
-            deadline: .now() + .milliseconds(matched.delayMilliseconds),
+            deadline: .now() + .milliseconds(matched.plan.delayMilliseconds),
             execute: work
         )
     }
@@ -625,8 +716,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
               let current = sampleColor(at: point),
               current.isWithin(toleranceStepper.integerValue, of: target.color),
               !CGEventSource.keyState(.combinedSessionState, key: 53) else { return }
-        performSingleClick(at: resolvedClickPoint(monitoredPoint: point))
-        statusLabel.stringValue = "已匹配 \(target.color.hex)，延时 \(target.delayMilliseconds) ms 后完成点击"
+        startClickSequence(
+            monitoredPoint: point,
+            plan: target.plan,
+            completionMessage: "已匹配 \(target.color.hex)，完成 \(target.plan.clickCount) 次点击"
+        )
     }
 
     private func pollPixelChange(current: PixelColor, tolerance: Int) {
@@ -634,16 +728,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         let changed = !current.isWithin(tolerance, of: baselineColor)
         if changed {
             if armedForChange {
-                performSingleClick(at: resolvedClickPoint(monitoredPoint: point))
-                statusLabel.stringValue = "检测到像素变化，已点击；等待颜色稳定"
+                armedForChange = false
+                scheduleChangeClick(monitoredPoint: point)
             }
             self.baselineColor = current
-            armedForChange = false
             lastChangeTime = Date()
-        } else if !armedForChange, Date().timeIntervalSince(lastChangeTime) >= 0.25 {
+        } else if !armedForChange, pendingClick == nil, clickSequenceID == nil,
+                  Date().timeIntervalSince(lastChangeTime) >= 0.25 {
             armedForChange = true
             statusLabel.stringValue = "颜色已稳定，继续监控… 按 Esc 停止"
         }
+    }
+
+    private func scheduleChangeClick(monitoredPoint: CGPoint) {
+        pendingClick?.cancel()
+        let plan = activeChangePlan
+        if plan.delayMilliseconds == 0 {
+            executeChangeClick(monitoredPoint: monitoredPoint)
+            return
+        }
+        statusLabel.stringValue = "检测到像素变化，\(plan.delayMilliseconds) ms 后点击"
+        let work = DispatchWorkItem { [weak self] in
+            self?.executeChangeClick(monitoredPoint: monitoredPoint)
+        }
+        pendingClick = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(plan.delayMilliseconds), execute: work)
+    }
+
+    private func executeChangeClick(monitoredPoint: CGPoint) {
+        pendingClick = nil
+        guard isMonitoring, modePopup.indexOfSelectedItem == 1,
+              !CGEventSource.keyState(.combinedSessionState, key: 53) else { return }
+        lastChangeTime = Date()
+        startClickSequence(
+            monitoredPoint: monitoredPoint,
+            plan: activeChangePlan,
+            completionMessage: "像素变化触发，完成 \(activeChangePlan.clickCount) 次点击"
+        )
+    }
+
+    private func startClickSequence(monitoredPoint: CGPoint, plan: ClickPlan, completionMessage: String) {
+        let sequenceID = UUID()
+        clickSequenceID = sequenceID
+
+        func perform(index: Int) {
+            guard isMonitoring, clickSequenceID == sequenceID,
+                  !CGEventSource.keyState(.combinedSessionState, key: 53) else { return }
+            performSingleClick(at: resolvedClickPoint(monitoredPoint: monitoredPoint))
+            if index >= plan.clickCount {
+                clickSequenceID = nil
+                statusLabel.stringValue = completionMessage
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(plan.intervalMilliseconds)) {
+                perform(index: index + 1)
+            }
+        }
+
+        perform(index: 1)
     }
 
     private func resolvedClickPoint(monitoredPoint: CGPoint) -> CGPoint {
@@ -655,6 +797,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     private func stopMonitoring(message: String) {
         pendingClick?.cancel()
         pendingClick = nil
+        clickSequenceID = nil
         countdownTimer?.cancel()
         countdownTimer = nil
         pollTimer?.cancel()
@@ -677,23 +820,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         modePopup.isEnabled = enabled
         toleranceStepper.isEnabled = enabled
         clickLocationPopup.isEnabled = enabled
+        regionSizePopup.isEnabled = enabled
+        changeDelayField.isEnabled = enabled
+        changeCountField.isEnabled = enabled
+        changeIntervalField.isEnabled = enabled
         addColorButton.isEnabled = enabled
         for row in colorRows {
             row.colorField.isEnabled = enabled
             row.pickButton.isEnabled = enabled
             row.delayField.isEnabled = enabled
+            row.countField.isEnabled = enabled
+            row.intervalField.isEnabled = enabled
             row.deleteButton.isEnabled = enabled && colorRows.count > 1
         }
         refreshColorRows()
     }
 
-    private func sampleColor(at point: CGPoint) -> PixelColor? {
-        let rect = CGRect(x: floor(point.x), y: floor(point.y), width: 1, height: 1)
+    private func sampleColor(at point: CGPoint, size: Int = 1) -> PixelColor? {
+        let safeSize = max(1, min(10, size))
+        let offset = CGFloat(safeSize / 2)
+        let rect = CGRect(
+            x: floor(point.x) - offset,
+            y: floor(point.y) - offset,
+            width: CGFloat(safeSize),
+            height: CGFloat(safeSize)
+        )
         guard let image = CGWindowListCreateImage(rect, .optionOnScreenOnly, kCGNullWindowID, [.nominalResolution]),
               let provider = image.dataProvider,
               let data = provider.data,
               let bytes = CFDataGetBytePtr(data), image.bitsPerPixel >= 24 else { return nil }
-        return PixelColor(r: bytes[2], g: bytes[1], b: bytes[0])
+        let bytesPerPixel = image.bitsPerPixel / 8
+        var red = 0, green = 0, blue = 0
+        for y in 0..<image.height {
+            for x in 0..<image.width {
+                let index = y * image.bytesPerRow + x * bytesPerPixel
+                blue += Int(bytes[index])
+                green += Int(bytes[index + 1])
+                red += Int(bytes[index + 2])
+            }
+        }
+        let count = max(1, image.width * image.height)
+        return PixelColor(r: UInt8(red / count), g: UInt8(green / count), b: UInt8(blue / count))
     }
 
     private func performSingleClick(at point: CGPoint) {
@@ -723,10 +890,13 @@ private final class ColorRow {
     let colorWell: NSColorWell
     let pickButton: NSButton
     let delayField: NSTextField
+    let countField: NSTextField
+    let intervalField: NSTextField
     let deleteButton: NSButton
 
     init(id: UUID, container: NSStackView, numberLabel: NSTextField, colorField: NSTextField,
-         colorWell: NSColorWell, pickButton: NSButton, delayField: NSTextField, deleteButton: NSButton) {
+         colorWell: NSColorWell, pickButton: NSButton, delayField: NSTextField,
+         countField: NSTextField, intervalField: NSTextField, deleteButton: NSButton) {
         self.id = id
         self.container = container
         self.numberLabel = numberLabel
@@ -734,6 +904,8 @@ private final class ColorRow {
         self.colorWell = colorWell
         self.pickButton = pickButton
         self.delayField = delayField
+        self.countField = countField
+        self.intervalField = intervalField
         self.deleteButton = deleteButton
     }
 }
@@ -745,7 +917,13 @@ private final class FlippedView: NSView {
 private struct ColorTarget {
     let id: UUID
     let color: PixelColor
+    let plan: ClickPlan
+}
+
+private struct ClickPlan {
     let delayMilliseconds: Int
+    let clickCount: Int
+    let intervalMilliseconds: Int
 }
 
 private struct PixelColor: Equatable {
