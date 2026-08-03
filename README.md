@@ -72,9 +72,14 @@ outputs/像素变化点击器.app
 .
 ├── Package.swift
 ├── Sources/PixelWatcher/main.swift
+├── Windows11/                  # C# WinForms Windows 11 版本
 ├── build_app.sh
 └── README.md
 ```
+
+## Windows 11 版本
+
+Windows 11 版本位于 [`Windows11`](Windows11) 目录。GitHub Actions 会使用 Windows 构建机生成自包含的单文件 `PixelColorClicker.exe`；可在仓库的 **Actions → Build Windows EXE** 页面下载成功构建的产物。
 
 ## 触发规则
 

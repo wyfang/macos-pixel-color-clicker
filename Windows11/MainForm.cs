@@ -1,0 +1,680 @@
+using System.Diagnostics;
+
+namespace PixelColorClicker;
+
+internal sealed class MainForm : Form
+{
+    private readonly Button _selectPositionButton;
+    private readonly Label _positionLabel;
+    private readonly ComboBox _modeCombo;
+    private readonly Panel _targetSection;
+    private FlowLayoutPanel _colorRowsPanel = null!;
+    private Button _addColorButton = null!;
+    private readonly NumericUpDown _toleranceInput;
+    private readonly ComboBox _clickLocationCombo;
+    private readonly Label _currentColorLabel;
+    private readonly Button _startButton;
+    private readonly Label _statusLabel;
+    private readonly List<ColorTargetRowControl> _colorRows = [];
+    private readonly List<ColorTarget> _activeTargets = [];
+    private readonly System.Windows.Forms.Timer _pollTimer;
+    private readonly System.Windows.Forms.Timer _countdownTimer;
+    private readonly CancellationTokenSource _lifetimeCancellation = new();
+
+    private NativeMethods.POINT? _selectedPoint;
+    private Color? _baselineColor;
+    private volatile bool _selectingPosition;
+    private volatile ColorTargetRowControl? _pickingColorRow;
+    private volatile bool _isCountingDown;
+    private volatile bool _isMonitoring;
+    private int _countdownRemaining;
+    private bool _changeArmed = true;
+    private Guid? _lastMatchedTargetId;
+    private long _lastChangeTimestamp;
+    private long _lastColorDisplayTimestamp;
+    private CancellationTokenSource? _pendingClickCancellation;
+
+    internal MainForm()
+    {
+        Text = "屏幕颜色触发点击器";
+        StartPosition = FormStartPosition.CenterScreen;
+        ClientSize = new Size(590, 710);
+        MinimumSize = new Size(606, 749);
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MaximizeBox = false;
+        KeyPreview = true;
+        Font = new Font("Microsoft YaHei UI", 9F);
+
+        var root = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoScroll = true,
+            Padding = new Padding(18),
+            BackColor = SystemColors.Window
+        };
+
+        var title = new Label
+        {
+            Text = "屏幕颜色触发点击",
+            Font = new Font(Font.FontFamily, 16F, FontStyle.Bold),
+            Width = 540,
+            Height = 38,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+
+        var positionRow = CreateRow("监控位置");
+        _selectPositionButton = new Button { Text = "选择位置", Width = 105, Height = 30 };
+        _positionLabel = new Label
+        {
+            Text = "尚未选择",
+            Width = 260,
+            Height = 30,
+            ForeColor = SystemColors.GrayText,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        positionRow.Controls.Add(_selectPositionButton);
+        positionRow.Controls.Add(_positionLabel);
+
+        var modeRow = CreateRow("监控功能");
+        _modeCombo = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width = 190
+        };
+        _modeCombo.Items.AddRange(["匹配目标颜色", "检测像素变化"]);
+        _modeCombo.SelectedIndex = 0;
+        modeRow.Controls.Add(_modeCombo);
+
+        _targetSection = BuildTargetSection();
+
+        var toleranceRow = CreateRow("颜色容差");
+        _toleranceInput = new NumericUpDown
+        {
+            Minimum = 0,
+            Maximum = 100,
+            Value = 10,
+            Width = 70,
+            TextAlign = HorizontalAlignment.Right
+        };
+        var toleranceHint = new Label
+        {
+            Text = "RGB 每个通道允许 ±10",
+            AutoSize = true,
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(8, 7, 0, 0)
+        };
+        toleranceRow.Controls.Add(_toleranceInput);
+        toleranceRow.Controls.Add(toleranceHint);
+
+        var clickRow = CreateRow("点击位置");
+        _clickLocationCombo = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width = 190
+        };
+        _clickLocationCombo.Items.AddRange(["选择的监控位置", "当前鼠标位置"]);
+        _clickLocationCombo.SelectedIndex = 0;
+        clickRow.Controls.Add(_clickLocationCombo);
+
+        _currentColorLabel = new Label
+        {
+            Text = "当前位置颜色：—",
+            Width = 540,
+            Height = 26,
+            Font = new Font("Consolas", 9.5F),
+            ForeColor = SystemColors.GrayText,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        _startButton = new Button
+        {
+            Text = "开始监控",
+            Width = 150,
+            Height = 36
+        };
+        _statusLabel = new Label
+        {
+            Text = "点击“选择位置”，移动鼠标后按 Enter 确认",
+            Width = 540,
+            Height = 52,
+            ForeColor = SystemColors.GrayText
+        };
+
+        root.Controls.AddRange([
+            title, positionRow, modeRow, _targetSection, toleranceRow,
+            clickRow, _currentColorLabel, _startButton, _statusLabel
+        ]);
+        Controls.Add(root);
+
+        _pollTimer = new System.Windows.Forms.Timer { Interval = 8 };
+        _countdownTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+
+        _selectPositionButton.Click += (_, _) => BeginSelectingPosition();
+        _modeCombo.SelectedIndexChanged += (_, _) => UpdateMode();
+        _toleranceInput.ValueChanged += (_, _) => toleranceHint.Text = $"RGB 每个通道允许 ±{Tolerance}";
+        _startButton.Click += (_, _) => ToggleMonitoring();
+        _pollTimer.Tick += (_, _) => PollPixel();
+        _countdownTimer.Tick += (_, _) => AdvanceCountdown();
+        KeyDown += HandleFormKeyDown;
+
+        AddColorRow("#66D169");
+        _ = RunKeyWatcherAsync(_lifetimeCancellation.Token);
+    }
+
+    private int Tolerance => decimal.ToInt32(_toleranceInput.Value);
+    private bool UsesTargetColors => _modeCombo.SelectedIndex == 0;
+
+    private static FlowLayoutPanel CreateRow(string title)
+    {
+        var row = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Width = 540,
+            Height = 40,
+            Margin = new Padding(0, 3, 0, 3)
+        };
+        row.Controls.Add(new Label
+        {
+            Text = title,
+            Width = 85,
+            Height = 30,
+            TextAlign = ContentAlignment.MiddleLeft
+        });
+        return row;
+    }
+
+    private Panel BuildTargetSection()
+    {
+        var panel = new Panel
+        {
+            Width = 540,
+            Height = 242,
+            Margin = new Padding(0, 2, 0, 4)
+        };
+        var header = new Label
+        {
+            Text = "目标颜色                                       延时（毫秒）",
+            Dock = DockStyle.Top,
+            Height = 24,
+            ForeColor = SystemColors.GrayText
+        };
+        _colorRowsPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            Height = 172,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoScroll = true,
+            BorderStyle = BorderStyle.FixedSingle,
+            Padding = new Padding(5)
+        };
+        _addColorButton = new Button
+        {
+            Text = "＋ 添加颜色",
+            Width = 110,
+            Height = 30,
+            Top = 204,
+            Left = 0
+        };
+        _addColorButton.Click += (_, _) => AddColorRow("#FFFFFF");
+        panel.Controls.Add(_addColorButton);
+        panel.Controls.Add(_colorRowsPanel);
+        panel.Controls.Add(header);
+        return panel;
+    }
+
+    private void AddColorRow(string initialColor)
+    {
+        var row = new ColorTargetRowControl(initialColor);
+        row.DeleteRequested += (_, _) => DeleteColorRow(row);
+        row.PickRequested += (_, _) => BeginPickingColor(row);
+        _colorRows.Add(row);
+        _colorRowsPanel.Controls.Add(row);
+        RefreshColorRows();
+        _colorRowsPanel.ScrollControlIntoView(row);
+        if (_statusLabel is not null && _colorRows.Count > 1)
+        {
+            _statusLabel.Text = $"已添加颜色 {_colorRows.Count}";
+        }
+    }
+
+    private void DeleteColorRow(ColorTargetRowControl row)
+    {
+        if (_colorRows.Count <= 1)
+        {
+            System.Media.SystemSounds.Beep.Play();
+            _statusLabel.Text = "至少需要保留一个目标颜色";
+            return;
+        }
+
+        _colorRows.Remove(row);
+        _colorRowsPanel.Controls.Remove(row);
+        row.Dispose();
+        RefreshColorRows();
+        _statusLabel.Text = $"已删除，当前共有 {_colorRows.Count} 个目标颜色";
+    }
+
+    private void RefreshColorRows()
+    {
+        for (int index = 0; index < _colorRows.Count; index++)
+        {
+            _colorRows[index].SetIndex(index + 1);
+            _colorRows[index].SetEditorEnabled(!_isMonitoring && !_isCountingDown, _colorRows.Count > 1);
+        }
+    }
+
+    private void UpdateMode()
+    {
+        _targetSection.Visible = UsesTargetColors;
+        _statusLabel.Text = UsesTargetColors
+            ? "可添加多个颜色，并分别设置识别后的点击延时"
+            : "开始监控时会记录当前位置颜色，变化超过容差后点击";
+    }
+
+    private void BeginSelectingPosition()
+    {
+        StopAll(string.Empty);
+        CancelInteraction();
+        _selectingPosition = true;
+        _selectPositionButton.Text = "等待 Enter…";
+        _statusLabel.Text = "请移动鼠标到目标位置，然后按 Enter；按 Esc 取消";
+    }
+
+    private void BeginPickingColor(ColorTargetRowControl row)
+    {
+        StopAll(string.Empty);
+        CancelInteraction();
+        _pickingColorRow = row;
+        row.PickButton.Text = "等待…";
+        _statusLabel.Text = "请把鼠标移到要吸取的颜色上，然后按 Enter；按 Esc 取消";
+    }
+
+    private void ConfirmInteraction()
+    {
+        if (!NativeMethods.GetCursorPos(out NativeMethods.POINT point))
+        {
+            _statusLabel.Text = "无法读取鼠标位置";
+            return;
+        }
+
+        if (_pickingColorRow is { } row)
+        {
+            Color? color = NativeMethods.ReadScreenPixel(point);
+            if (color is null)
+            {
+                _statusLabel.Text = "无法读取屏幕颜色";
+                CancelInteraction();
+                return;
+            }
+
+            row.SetPickedColor(color.Value);
+            CancelInteraction();
+            _statusLabel.Text = $"已吸取颜色 {ColorUtilities.ToHex(color.Value)}";
+            Activate();
+            return;
+        }
+
+        if (_selectingPosition)
+        {
+            _selectedPoint = point;
+            _positionLabel.Text = $"x: {point.X}, y: {point.Y}";
+            Color? color = NativeMethods.ReadScreenPixel(point);
+            _currentColorLabel.Text = color is null
+                ? "当前位置颜色：读取失败"
+                : $"当前位置颜色：{ColorUtilities.ToHex(color.Value)}";
+            CancelInteraction();
+            _statusLabel.Text = "位置已确认";
+            Activate();
+        }
+    }
+
+    private void CancelInteraction()
+    {
+        _selectingPosition = false;
+        _selectPositionButton.Text = _selectedPoint is null ? "选择位置" : "重新选择";
+        if (_pickingColorRow is { } row)
+        {
+            row.PickButton.Text = "吸取";
+        }
+        _pickingColorRow = null;
+    }
+
+    private void ToggleMonitoring()
+    {
+        if (_isMonitoring || _isCountingDown)
+        {
+            StopAll("已取消");
+        }
+        else
+        {
+            PrepareCountdown();
+        }
+    }
+
+    private void PrepareCountdown()
+    {
+        if (_selectedPoint is null)
+        {
+            System.Media.SystemSounds.Beep.Play();
+            _statusLabel.Text = "请先选择监控位置";
+            return;
+        }
+
+        _activeTargets.Clear();
+        if (UsesTargetColors)
+        {
+            for (int index = 0; index < _colorRows.Count; index++)
+            {
+                if (!_colorRows[index].TryCreateTarget(out ColorTarget target))
+                {
+                    System.Media.SystemSounds.Beep.Play();
+                    _statusLabel.Text = $"颜色 {index + 1} 格式不正确，请输入例如 #66D169";
+                    return;
+                }
+                _activeTargets.Add(target);
+            }
+        }
+
+        if (NativeMethods.ReadScreenPixel(_selectedPoint.Value) is null)
+        {
+            _statusLabel.Text = "无法读取监控位置的屏幕颜色";
+            return;
+        }
+
+        CancelInteraction();
+        _isCountingDown = true;
+        _countdownRemaining = 3;
+        SetControlsEnabled(false);
+        _startButton.Enabled = true;
+        _startButton.Text = "取消倒计时（3）";
+        _statusLabel.Text = "3 秒后开始监控… 按 Esc 取消";
+        _countdownTimer.Start();
+    }
+
+    private void AdvanceCountdown()
+    {
+        if (!_isCountingDown)
+        {
+            return;
+        }
+
+        _countdownRemaining--;
+        if (_countdownRemaining > 0)
+        {
+            _startButton.Text = $"取消倒计时（{_countdownRemaining}）";
+            _statusLabel.Text = $"{_countdownRemaining} 秒后开始监控… 按 Esc 取消";
+        }
+        else
+        {
+            ActivateMonitoring();
+        }
+    }
+
+    private void ActivateMonitoring()
+    {
+        if (_selectedPoint is null || NativeMethods.ReadScreenPixel(_selectedPoint.Value) is not { } current)
+        {
+            StopAll("无法读取屏幕颜色");
+            return;
+        }
+
+        _countdownTimer.Stop();
+        _isCountingDown = false;
+        _baselineColor = current;
+        _changeArmed = true;
+        _lastMatchedTargetId = null;
+        _lastChangeTimestamp = 0;
+        _isMonitoring = true;
+        SetControlsEnabled(false);
+        _startButton.Enabled = true;
+        _startButton.Text = "停止监控";
+        _statusLabel.Text = UsesTargetColors
+            ? $"正在监控 {_activeTargets.Count} 个目标颜色… 按 Esc 停止"
+            : $"正在检测像素变化，容差 ±{Tolerance}… 按 Esc 停止";
+        _pollTimer.Start();
+    }
+
+    private void PollPixel()
+    {
+        if (!_isMonitoring || _selectedPoint is null ||
+            NativeMethods.ReadScreenPixel(_selectedPoint.Value) is not { } current)
+        {
+            return;
+        }
+
+        long now = Stopwatch.GetTimestamp();
+        if (Stopwatch.GetElapsedTime(_lastColorDisplayTimestamp, now) >= TimeSpan.FromMilliseconds(100))
+        {
+            _currentColorLabel.Text = $"当前位置颜色：{ColorUtilities.ToHex(current)}";
+            _lastColorDisplayTimestamp = now;
+        }
+
+        if (UsesTargetColors)
+        {
+            PollTargetColors(current);
+        }
+        else
+        {
+            PollPixelChange(current, now);
+        }
+    }
+
+    private void PollTargetColors(Color current)
+    {
+        ColorTarget? matched = null;
+        foreach (ColorTarget candidate in _activeTargets)
+        {
+            if (ColorUtilities.IsWithin(current, candidate.Color, Tolerance))
+            {
+                matched = candidate;
+                break;
+            }
+        }
+
+        if (matched is null)
+        {
+            if (_lastMatchedTargetId is not null)
+            {
+                CancelPendingClick();
+                _statusLabel.Text = "继续等待目标颜色… 按 Esc 停止";
+            }
+            _lastMatchedTargetId = null;
+            return;
+        }
+
+        ColorTarget target = matched.Value;
+        if (_lastMatchedTargetId == target.Id)
+        {
+            return;
+        }
+
+        CancelPendingClick();
+        _lastMatchedTargetId = target.Id;
+        ScheduleTargetClick(target);
+    }
+
+    private async void ScheduleTargetClick(ColorTarget target)
+    {
+        _pendingClickCancellation = new CancellationTokenSource();
+        CancellationToken token = _pendingClickCancellation.Token;
+        if (target.DelayMilliseconds > 0)
+        {
+            _statusLabel.Text = $"匹配 {ColorUtilities.ToHex(target.Color)}，保持 {target.DelayMilliseconds} ms 后点击";
+            try
+            {
+                await Task.Delay(target.DelayMilliseconds, token);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
+
+        if (token.IsCancellationRequested || !_isMonitoring || _selectedPoint is null ||
+            _lastMatchedTargetId != target.Id ||
+            NativeMethods.ReadScreenPixel(_selectedPoint.Value) is not { } current ||
+            !ColorUtilities.IsWithin(current, target.Color, Tolerance))
+        {
+            return;
+        }
+
+        PerformClick();
+        _statusLabel.Text = $"已匹配 {ColorUtilities.ToHex(target.Color)}，延时 {target.DelayMilliseconds} ms 后完成点击";
+    }
+
+    private void PollPixelChange(Color current, long now)
+    {
+        if (_baselineColor is null || _selectedPoint is null)
+        {
+            return;
+        }
+
+        bool changed = !ColorUtilities.IsWithin(current, _baselineColor.Value, Tolerance);
+        if (changed)
+        {
+            if (_changeArmed)
+            {
+                PerformClick();
+                _statusLabel.Text = "检测到像素变化，已点击；等待颜色稳定";
+            }
+            _baselineColor = current;
+            _changeArmed = false;
+            _lastChangeTimestamp = now;
+        }
+        else if (!_changeArmed && Stopwatch.GetElapsedTime(_lastChangeTimestamp, now) >= TimeSpan.FromMilliseconds(250))
+        {
+            _changeArmed = true;
+            _statusLabel.Text = "颜色已稳定，继续监控… 按 Esc 停止";
+        }
+    }
+
+    private void PerformClick()
+    {
+        if (_selectedPoint is null)
+        {
+            return;
+        }
+
+        NativeMethods.POINT clickPoint = _selectedPoint.Value;
+        bool moveCursor = _clickLocationCombo.SelectedIndex == 0;
+        if (!moveCursor && !NativeMethods.GetCursorPos(out clickPoint))
+        {
+            _statusLabel.Text = "无法读取当前鼠标位置";
+            return;
+        }
+
+        if (!NativeMethods.LeftClick(clickPoint, moveCursor))
+        {
+            _statusLabel.Text = "点击失败；如果目标程序以管理员身份运行，请让本程序也以管理员身份运行";
+        }
+    }
+
+    private void StopAll(string message)
+    {
+        CancelPendingClick();
+        _countdownTimer.Stop();
+        _pollTimer.Stop();
+        _isCountingDown = false;
+        _isMonitoring = false;
+        _countdownRemaining = 0;
+        _lastMatchedTargetId = null;
+        SetControlsEnabled(true);
+        _startButton.Text = "开始监控";
+        if (!string.IsNullOrEmpty(message))
+        {
+            _statusLabel.Text = message;
+        }
+    }
+
+    private void CancelPendingClick()
+    {
+        _pendingClickCancellation?.Cancel();
+        _pendingClickCancellation?.Dispose();
+        _pendingClickCancellation = null;
+    }
+
+    private void SetControlsEnabled(bool enabled)
+    {
+        _selectPositionButton.Enabled = enabled;
+        _modeCombo.Enabled = enabled;
+        _toleranceInput.Enabled = enabled;
+        _clickLocationCombo.Enabled = enabled;
+        _addColorButton.Enabled = enabled;
+        foreach (ColorTargetRowControl row in _colorRows)
+        {
+            row.SetEditorEnabled(enabled, _colorRows.Count > 1);
+        }
+    }
+
+    private void HandleFormKeyDown(object? sender, KeyEventArgs eventArgs)
+    {
+        if (eventArgs.KeyCode == Keys.Escape)
+        {
+            HandleEscape();
+            eventArgs.Handled = true;
+        }
+        else if (eventArgs.KeyCode == Keys.Enter && (_selectingPosition || _pickingColorRow is not null))
+        {
+            ConfirmInteraction();
+            eventArgs.Handled = true;
+        }
+    }
+
+    private void HandleEscape()
+    {
+        CancelInteraction();
+        StopAll("已停止（Esc）");
+    }
+
+    private async Task RunKeyWatcherAsync(CancellationToken token)
+    {
+        bool enterWasDown = false;
+        bool escapeWasDown = false;
+        while (!token.IsCancellationRequested)
+        {
+            bool enterDown = NativeMethods.IsKeyDown(NativeMethods.VK_RETURN);
+            bool escapeDown = NativeMethods.IsKeyDown(NativeMethods.VK_ESCAPE);
+
+            if (escapeDown && !escapeWasDown &&
+                (_isMonitoring || _isCountingDown || _selectingPosition || _pickingColorRow is not null))
+            {
+                SafeBeginInvoke(HandleEscape);
+            }
+            if (enterDown && !enterWasDown && (_selectingPosition || _pickingColorRow is not null))
+            {
+                SafeBeginInvoke(ConfirmInteraction);
+            }
+
+            enterWasDown = enterDown;
+            escapeWasDown = escapeDown;
+            try
+            {
+                await Task.Delay(5, token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
+    }
+
+    private void SafeBeginInvoke(Action action)
+    {
+        if (!IsDisposed && IsHandleCreated)
+        {
+            BeginInvoke(action);
+        }
+    }
+
+    protected override void OnFormClosed(FormClosedEventArgs eventArgs)
+    {
+        _lifetimeCancellation.Cancel();
+        CancelPendingClick();
+        _pollTimer.Dispose();
+        _countdownTimer.Dispose();
+        _lifetimeCancellation.Dispose();
+        base.OnFormClosed(eventArgs);
+    }
+}
