@@ -33,7 +33,7 @@ jobs:
           dotnet publish Windows11/PixelColorClicker.csproj
           -c Release
           -r win-x64
-          --self-contained true
+          --self-contained false
           --no-restore
           -o Windows11/publish
 
@@ -44,14 +44,14 @@ jobs:
           if (-not (Test-Path $exe)) { throw "PixelColorClicker.exe was not generated" }
           Get-Item $exe | Format-List Name, Length, LastWriteTime
 
-      - name: Verify portable folder
+      - name: Verify release folder
         shell: pwsh
         run: |
           $settings = "Windows11/publish/settings.json"
           if (-not (Test-Path $settings)) { throw "settings.json was not generated" }
           Get-ChildItem "Windows11/publish" | Format-Table Name, Length
 
-      - name: Upload portable folder
+      - name: Upload release folder
         uses: actions/upload-artifact@v7
         with:
           name: PixelColorClicker-Windows11-x64

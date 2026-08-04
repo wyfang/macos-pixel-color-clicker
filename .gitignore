@@ -2,5 +2,9 @@
 .build/
 work/
 outputs/
+Windows11/bin/
+Windows11/obj/
+Windows11/publish/
+*.exe
 *.xcuserstate
 DerivedData/

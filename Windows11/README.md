@@ -1,6 +1,8 @@
 # Windows 11 版本
 
-这是屏幕颜色触发点击器的 Windows 11 原生版本，使用 C#、.NET 10、Windows Forms 和 Win32 API 实现。
+这是屏幕颜色触发点击器的 Windows 11 版本，使用 C#、.NET 10、Windows Forms 和 Win32 API 实现。
+
+程序采用框架依赖单文件发布，以尽可能减小 EXE 体积。运行电脑需要预先安装 x64 版 .NET Desktop Runtime 10。
 
 ## 功能
 
@@ -24,12 +26,12 @@
 在 Windows 11 上安装 .NET 10 SDK 后运行：
 
 ```powershell
-dotnet publish PixelColorClicker.csproj -c Release -r win-x64 --self-contained true
+dotnet publish PixelColorClicker.csproj -c Release -r win-x64 --self-contained false
 ```
 
 ## GitHub 自动构建
 
-仓库中的 `Build Windows EXE` 工作流会在 GitHub 的 Windows 构建机上生成便携式文件夹：
+仓库中的 `Build Windows EXE` 工作流会在 GitHub 的 Windows 构建机上生成发布文件夹：
 
 ```text
 PixelColorClicker-Windows11-x64/
@@ -39,10 +41,12 @@ PixelColorClicker-Windows11-x64/
 
 在仓库的 **Actions → Build Windows EXE** 页面打开成功的构建，即可下载该文件夹产物。
 
+运行前可在命令提示符中执行 `dotnet --list-runtimes | findstr WindowsDesktop`；输出中包含 `Microsoft.WindowsDesktop.App 10.0.x` 即满足运行要求。
+
 ## 注意事项
 
 程序默认以普通用户权限运行。根据 Windows UIPI 安全机制，普通权限程序无法向以管理员身份运行的软件发送点击；遇到这种情况时，点击窗口顶部的“以管理员身份重启”，并在 Windows UAC 提示中确认。
 
 没有强制程序每次都申请管理员权限，因为监控普通软件时不需要提升权限，也可以避免每次启动都显示 UAC。
 
-程序采用便携式目录：`PixelColorClicker.exe` 与 `settings.json` 放在同一个文件夹，所有设置直接保存在 EXE 旁边的 JSON 文件中。请把整个文件夹放在当前用户可写的位置，不要只移动 EXE，也不建议放入受保护的 `Program Files` 目录。
+程序采用免安装目录结构：`PixelColorClicker.exe` 与 `settings.json` 放在同一个文件夹，所有设置直接保存在 EXE 旁边的 JSON 文件中。程序仍依赖电脑中已经安装的 .NET Desktop Runtime 10。请把整个文件夹放在当前用户可写的位置，不要只移动 EXE，也不建议放入受保护的 `Program Files` 目录。
