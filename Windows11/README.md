@@ -34,7 +34,7 @@ dotnet publish PixelColorClicker.csproj -c Release -r win-x64 --self-contained f
 仓库中的 `Build Windows EXE` 工作流会在 GitHub 的 Windows 构建机上生成发布文件夹：
 
 ```text
-PixelColorClicker-Windows11-x64/
+PixelColorClicker/
 ├── PixelColorClicker.exe
 └── settings.json
 ```
