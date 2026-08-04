@@ -82,9 +82,9 @@ outputs/像素变化点击器.app
 
 ## Windows 11 版本
 
-Windows 11 版本位于 [`Windows11`](Windows11) 目录。GitHub Actions 会使用 Windows 构建机生成自包含的单文件 `PixelColorClicker.exe`；可在仓库的 **Actions → Build Windows EXE** 页面下载成功构建的产物。
+Windows 11 版本位于 [`Windows11`](Windows11) 目录。GitHub Actions 会使用 Windows 构建机生成包含 `PixelColorClicker.exe` 和 `settings.json` 的便携式文件夹；可在仓库的 **Actions → Build Windows EXE** 页面下载成功构建的产物。
 
-Windows 11 版本还支持醒目的管理员权限状态及一键 UAC 重启、`F6`–`F12` 可选全局启动快捷键、0–60 秒启动倒计时，并会在退出时保存监控位置、目标颜色列表以及两种模式的全部参数。
+Windows 11 版本还支持醒目的管理员权限状态及一键 UAC 重启、`F6`–`F12` 可选全局启动快捷键、0–60 秒启动倒计时，并会在退出时把监控位置、目标颜色列表以及两种模式的全部参数保存到 EXE 同目录的 `settings.json`。
 
 ## 触发规则
 

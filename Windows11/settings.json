@@ -1,0 +1,22 @@
+{
+  "Version": 1,
+  "MonitorX": null,
+  "MonitorY": null,
+  "SelectedMode": 0,
+  "Tolerance": 10,
+  "ClickLocation": 0,
+  "RegionSize": 1,
+  "ChangeDelayMilliseconds": 0,
+  "ChangeClickCount": 1,
+  "ChangeIntervalMilliseconds": 100,
+  "CountdownSeconds": 3,
+  "StartHotkey": 119,
+  "TargetColors": [
+    {
+      "Color": "#66D169",
+      "DelayMilliseconds": 0,
+      "ClickCount": 1,
+      "IntervalMilliseconds": 100
+    }
+  ]
+}

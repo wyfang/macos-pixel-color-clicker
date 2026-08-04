@@ -29,16 +29,20 @@ dotnet publish PixelColorClicker.csproj -c Release -r win-x64 --self-contained t
 
 ## GitHub 自动构建
 
-仓库中的 `Build Windows EXE` 工作流会在 GitHub 的 Windows 构建机上生成自包含的单文件：
+仓库中的 `Build Windows EXE` 工作流会在 GitHub 的 Windows 构建机上生成便携式文件夹：
 
 ```text
-PixelColorClicker.exe
+PixelColorClicker-Windows11-x64/
+├── PixelColorClicker.exe
+└── settings.json
 ```
 
-在仓库的 **Actions → Build Windows EXE** 页面打开成功的构建，即可下载该文件。
+在仓库的 **Actions → Build Windows EXE** 页面打开成功的构建，即可下载该文件夹产物。
 
 ## 注意事项
 
 程序默认以普通用户权限运行。根据 Windows UIPI 安全机制，普通权限程序无法向以管理员身份运行的软件发送点击；遇到这种情况时，点击窗口顶部的“以管理员身份重启”，并在 Windows UAC 提示中确认。
 
-没有强制程序每次都申请管理员权限，因为监控普通软件时不需要提升权限，也可以避免每次启动都显示 UAC。设置保存在当前 Windows 用户的 `%LOCALAPPDATA%\PixelColorClicker\settings.json` 中。
+没有强制程序每次都申请管理员权限，因为监控普通软件时不需要提升权限，也可以避免每次启动都显示 UAC。
+
+程序采用便携式目录：`PixelColorClicker.exe` 与 `settings.json` 放在同一个文件夹，所有设置直接保存在 EXE 旁边的 JSON 文件中。请把整个文件夹放在当前用户可写的位置，不要只移动 EXE，也不建议放入受保护的 `Program Files` 目录。

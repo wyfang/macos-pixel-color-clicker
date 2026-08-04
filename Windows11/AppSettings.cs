@@ -40,12 +40,7 @@ internal static class SettingsStore
         WriteIndented = true
     };
 
-    private static string SettingsDirectory => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "PixelColorClicker"
-    );
-
-    private static string SettingsPath => Path.Combine(SettingsDirectory, "settings.json");
+    private static string SettingsPath => Path.Combine(AppContext.BaseDirectory, "settings.json");
 
     internal static AppSettings Load()
     {
@@ -69,7 +64,6 @@ internal static class SettingsStore
     {
         try
         {
-            Directory.CreateDirectory(SettingsDirectory);
             string temporaryPath = SettingsPath + ".tmp";
             File.WriteAllText(temporaryPath, JsonSerializer.Serialize(settings, JsonOptions));
             File.Move(temporaryPath, SettingsPath, true);
