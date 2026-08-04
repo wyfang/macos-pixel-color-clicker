@@ -6,6 +6,7 @@ internal static class NativeMethods
 {
     internal const int VK_RETURN = 0x0D;
     internal const int VK_ESCAPE = 0x1B;
+    internal const int WM_HOTKEY = 0x0312;
     private const uint INPUT_MOUSE = 0;
     private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
     private const uint MOUSEEVENTF_LEFTUP = 0x0004;
@@ -33,6 +34,14 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     private static extern short GetAsyncKeyState(int virtualKey);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool RegisterHotKey(IntPtr windowHandle, int id, uint modifiers, uint virtualKey);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool UnregisterHotKey(IntPtr windowHandle, int id);
 
     internal static bool IsKeyDown(int virtualKey) => (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
 

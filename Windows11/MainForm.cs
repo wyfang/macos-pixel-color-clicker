@@ -1,9 +1,20 @@
 using System.Diagnostics;
+using System.ComponentModel;
+using System.Security.Principal;
 
 namespace PixelColorClicker;
 
 internal sealed class MainForm : Form
 {
+    private const int StartHotkeyId = 0x5043;
+    private static readonly Keys[] AvailableHotkeys =
+    [
+        Keys.F6, Keys.F7, Keys.F8, Keys.F9, Keys.F10, Keys.F11, Keys.F12
+    ];
+
+    private readonly Panel _privilegePanel;
+    private readonly Label _privilegeLabel;
+    private readonly Button _restartAsAdminButton;
     private readonly Button _selectPositionButton;
     private readonly Label _positionLabel;
     private readonly ComboBox _modeCombo;
@@ -17,6 +28,9 @@ internal sealed class MainForm : Form
     private Button _addColorButton = null!;
     private readonly NumericUpDown _toleranceInput;
     private readonly ComboBox _clickLocationCombo;
+    private readonly NumericUpDown _countdownInput;
+    private readonly ComboBox _hotkeyCombo;
+    private readonly Label _hotkeyStatusLabel;
     private readonly Label _currentColorLabel;
     private readonly Button _startButton;
     private readonly Label _statusLabel;
@@ -40,13 +54,14 @@ internal sealed class MainForm : Form
     private CancellationTokenSource? _pendingClickCancellation;
     private CancellationTokenSource? _clickSequenceCancellation;
     private ClickPlan _activeChangePlan = new(0, 1, 100);
+    private bool _hotkeyRegistered;
 
     internal MainForm()
     {
         Text = "屏幕颜色触发点击器";
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(760, 790);
-        MinimumSize = new Size(776, 829);
+        ClientSize = new Size(760, 890);
+        MinimumSize = new Size(776, 760);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         KeyPreview = true;
@@ -70,6 +85,31 @@ internal sealed class MainForm : Form
             Height = 38,
             TextAlign = ContentAlignment.MiddleLeft
         };
+
+        _privilegePanel = new Panel
+        {
+            Width = 710,
+            Height = 54,
+            Margin = new Padding(0, 0, 0, 6),
+            Padding = new Padding(10, 8, 10, 8)
+        };
+        _privilegeLabel = new Label
+        {
+            Width = 510,
+            Height = 36,
+            Font = new Font(Font.FontFamily, 9F, FontStyle.Bold),
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        _restartAsAdminButton = new Button
+        {
+            Text = "以管理员身份重启",
+            Width = 160,
+            Height = 32,
+            Left = 530,
+            Top = 10
+        };
+        _privilegePanel.Controls.Add(_restartAsAdminButton);
+        _privilegePanel.Controls.Add(_privilegeLabel);
 
         var positionRow = CreateRow("监控位置");
         _selectPositionButton = new Button { Text = "选择位置", Width = 105, Height = 30 };
@@ -132,6 +172,42 @@ internal sealed class MainForm : Form
         _clickLocationCombo.SelectedIndex = 0;
         clickRow.Controls.Add(_clickLocationCombo);
 
+        var countdownRow = CreateRow("启动倒计时");
+        _countdownInput = new NumericUpDown
+        {
+            Minimum = 0,
+            Maximum = 60,
+            Value = AppSettings.DefaultCountdownSeconds,
+            Width = 70,
+            TextAlign = HorizontalAlignment.Right
+        };
+        countdownRow.Controls.Add(_countdownInput);
+        countdownRow.Controls.Add(new Label
+        {
+            Text = "秒（0 表示立即开始）",
+            AutoSize = true,
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(8, 7, 0, 0)
+        });
+
+        var hotkeyRow = CreateRow("启动快捷键");
+        _hotkeyCombo = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width = 100
+        };
+        _hotkeyCombo.Items.AddRange(AvailableHotkeys.Select(key => key.ToString()).ToArray());
+        _hotkeyCombo.SelectedItem = Keys.F8.ToString();
+        _hotkeyStatusLabel = new Label
+        {
+            Text = "全局快捷键，可开始或停止监控",
+            AutoSize = true,
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(8, 7, 0, 0)
+        };
+        hotkeyRow.Controls.Add(_hotkeyCombo);
+        hotkeyRow.Controls.Add(_hotkeyStatusLabel);
+
         _currentColorLabel = new Label
         {
             Text = "当前位置颜色：—",
@@ -156,8 +232,8 @@ internal sealed class MainForm : Form
         };
 
         root.Controls.AddRange([
-            title, positionRow, modeRow, _targetSection, _changeSection, toleranceRow,
-            clickRow, _currentColorLabel, _startButton, _statusLabel
+            title, _privilegePanel, positionRow, modeRow, _targetSection, _changeSection, toleranceRow,
+            clickRow, countdownRow, hotkeyRow, _currentColorLabel, _startButton, _statusLabel
         ]);
         Controls.Add(root);
 
@@ -165,20 +241,26 @@ internal sealed class MainForm : Form
         _countdownTimer = new System.Windows.Forms.Timer { Interval = 1000 };
 
         _selectPositionButton.Click += (_, _) => BeginSelectingPosition();
+        _restartAsAdminButton.Click += (_, _) => RestartAsAdministrator();
         _modeCombo.SelectedIndexChanged += (_, _) => UpdateMode();
+        _hotkeyCombo.SelectedIndexChanged += (_, _) => UpdateHotkeyRegistration();
         _toleranceInput.ValueChanged += (_, _) => toleranceHint.Text = $"RGB 每个通道允许 ±{Tolerance}";
         _startButton.Click += (_, _) => ToggleMonitoring();
         _pollTimer.Tick += (_, _) => PollPixel();
         _countdownTimer.Tick += (_, _) => AdvanceCountdown();
         KeyDown += HandleFormKeyDown;
 
-        AddColorRow("#66D169");
+        LoadSettings();
+        UpdateMode();
+        UpdatePrivilegeBanner();
+        UpdateStartButtonIdleText();
         _ = RunKeyWatcherAsync(_lifetimeCancellation.Token);
     }
 
     private int Tolerance => decimal.ToInt32(_toleranceInput.Value);
     private bool UsesTargetColors => _modeCombo.SelectedIndex == 0;
     private int RegionSize => _regionSizeCombo.SelectedIndex + 1;
+    private Keys SelectedHotkey => AvailableHotkeys[Math.Clamp(_hotkeyCombo.SelectedIndex, 0, AvailableHotkeys.Length - 1)];
 
     private static FlowLayoutPanel CreateRow(string title)
     {
@@ -291,16 +373,26 @@ internal sealed class MainForm : Form
         TextAlign = HorizontalAlignment.Right
     };
 
-    private void AddColorRow(string initialColor)
+    private void AddColorRow(
+        string initialColor,
+        int delayMilliseconds = 0,
+        int clickCount = 1,
+        int intervalMilliseconds = 100,
+        bool announce = true)
     {
-        var row = new ColorTargetRowControl(initialColor);
+        var row = new ColorTargetRowControl(
+            initialColor,
+            delayMilliseconds,
+            clickCount,
+            intervalMilliseconds
+        );
         row.DeleteRequested += (_, _) => DeleteColorRow(row);
         row.PickRequested += (_, _) => BeginPickingColor(row);
         _colorRows.Add(row);
         _colorRowsPanel.Controls.Add(row);
         RefreshColorRows();
         _colorRowsPanel.ScrollControlIntoView(row);
-        if (_statusLabel is not null && _colorRows.Count > 1)
+        if (announce && _statusLabel is not null && _colorRows.Count > 1)
         {
             _statusLabel.Text = $"已添加颜色 {_colorRows.Count}";
         }
@@ -410,6 +502,13 @@ internal sealed class MainForm : Form
 
     private void ToggleMonitoring()
     {
+        if (_selectingPosition || _pickingColorRow is not null)
+        {
+            System.Media.SystemSounds.Beep.Play();
+            _statusLabel.Text = "请先按 Enter 确认，或按 Esc 取消当前选择";
+            return;
+        }
+
         if (_isMonitoring || _isCountingDown)
         {
             StopAll("已取消");
@@ -460,12 +559,19 @@ internal sealed class MainForm : Form
         }
 
         CancelInteraction();
+        int countdownSeconds = decimal.ToInt32(_countdownInput.Value);
+        if (countdownSeconds == 0)
+        {
+            ActivateMonitoring();
+            return;
+        }
+
         _isCountingDown = true;
-        _countdownRemaining = 3;
+        _countdownRemaining = countdownSeconds;
         SetControlsEnabled(false);
         _startButton.Enabled = true;
-        _startButton.Text = "取消倒计时（3）";
-        _statusLabel.Text = "3 秒后开始监控… 按 Esc 取消";
+        _startButton.Text = $"取消倒计时（{_countdownRemaining}）";
+        _statusLabel.Text = $"{_countdownRemaining} 秒后开始监控… 按 Esc 取消";
         _countdownTimer.Start();
     }
 
@@ -755,7 +861,7 @@ internal sealed class MainForm : Form
         _countdownRemaining = 0;
         _lastMatchedTargetId = null;
         SetControlsEnabled(true);
-        _startButton.Text = "开始监控";
+        UpdateStartButtonIdleText();
         if (!string.IsNullOrEmpty(message))
         {
             _statusLabel.Text = message;
@@ -785,11 +891,170 @@ internal sealed class MainForm : Form
         _changeDelayInput.Enabled = enabled;
         _changeCountInput.Enabled = enabled;
         _changeIntervalInput.Enabled = enabled;
+        _countdownInput.Enabled = enabled;
+        _hotkeyCombo.Enabled = enabled;
         _addColorButton.Enabled = enabled;
         foreach (ColorTargetRowControl row in _colorRows)
         {
             row.SetEditorEnabled(enabled, _colorRows.Count > 1);
         }
+    }
+
+    private void LoadSettings()
+    {
+        AppSettings settings = SettingsStore.Load();
+
+        _modeCombo.SelectedIndex = Math.Clamp(settings.SelectedMode, 0, 1);
+        _toleranceInput.Value = Math.Clamp(settings.Tolerance, 0, 100);
+        _clickLocationCombo.SelectedIndex = Math.Clamp(settings.ClickLocation, 0, 1);
+        _regionSizeCombo.SelectedIndex = Math.Clamp(settings.RegionSize, 1, 10) - 1;
+        _changeDelayInput.Value = Math.Clamp(settings.ChangeDelayMilliseconds, 0, 60_000);
+        _changeCountInput.Value = Math.Clamp(settings.ChangeClickCount, 1, 100);
+        _changeIntervalInput.Value = Math.Clamp(settings.ChangeIntervalMilliseconds, 0, 60_000);
+        _countdownInput.Value = Math.Clamp(settings.CountdownSeconds, 0, 60);
+
+        Keys savedHotkey = (Keys)settings.StartHotkey;
+        int hotkeyIndex = Array.IndexOf(AvailableHotkeys, savedHotkey);
+        _hotkeyCombo.SelectedIndex = hotkeyIndex >= 0
+            ? hotkeyIndex
+            : Array.IndexOf(AvailableHotkeys, Keys.F8);
+
+        if (settings.MonitorX is { } x && settings.MonitorY is { } y)
+        {
+            _selectedPoint = new NativeMethods.POINT { X = x, Y = y };
+            _positionLabel.Text = $"x: {x}, y: {y}";
+            _selectPositionButton.Text = "重新选择";
+        }
+
+        IEnumerable<ColorTargetSetting> targetSettings = settings.TargetColors ?? [];
+        foreach (ColorTargetSetting target in targetSettings.Take(100))
+        {
+            AddColorRow(
+                string.IsNullOrWhiteSpace(target.Color) ? "#66D169" : target.Color,
+                target.DelayMilliseconds,
+                target.ClickCount,
+                target.IntervalMilliseconds,
+                announce: false
+            );
+        }
+        if (_colorRows.Count == 0)
+        {
+            AddColorRow("#66D169", announce: false);
+        }
+
+        _statusLabel.Text = _selectedPoint is null
+            ? "设置已恢复；请先选择监控位置"
+            : "已恢复上次关闭前的全部设置";
+    }
+
+    private bool SaveSettings()
+    {
+        var settings = new AppSettings
+        {
+            MonitorX = _selectedPoint?.X,
+            MonitorY = _selectedPoint?.Y,
+            SelectedMode = _modeCombo.SelectedIndex,
+            Tolerance = Tolerance,
+            ClickLocation = _clickLocationCombo.SelectedIndex,
+            RegionSize = RegionSize,
+            ChangeDelayMilliseconds = decimal.ToInt32(_changeDelayInput.Value),
+            ChangeClickCount = decimal.ToInt32(_changeCountInput.Value),
+            ChangeIntervalMilliseconds = decimal.ToInt32(_changeIntervalInput.Value),
+            CountdownSeconds = decimal.ToInt32(_countdownInput.Value),
+            StartHotkey = (int)SelectedHotkey,
+            TargetColors = _colorRows.Select(row => row.CreateSetting()).ToList()
+        };
+        return SettingsStore.Save(settings);
+    }
+
+    private static bool IsRunningAsAdministrator()
+    {
+        using WindowsIdentity identity = WindowsIdentity.GetCurrent();
+        return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+    }
+
+    private void UpdatePrivilegeBanner()
+    {
+        if (IsRunningAsAdministrator())
+        {
+            _privilegePanel.BackColor = Color.FromArgb(222, 245, 226);
+            _privilegeLabel.ForeColor = Color.FromArgb(20, 105, 45);
+            _privilegeLabel.Text = "✓ 当前已以管理员权限运行\n可以向管理员权限的软件发送点击";
+            _restartAsAdminButton.Visible = false;
+        }
+        else
+        {
+            _privilegePanel.BackColor = Color.FromArgb(255, 232, 224);
+            _privilegeLabel.ForeColor = Color.FromArgb(170, 45, 20);
+            _privilegeLabel.Text = "⚠ 当前为普通权限\n若目标软件是管理员权限，点击可能无效";
+            _restartAsAdminButton.Visible = true;
+        }
+    }
+
+    private void RestartAsAdministrator()
+    {
+        string? executablePath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(executablePath))
+        {
+            _statusLabel.Text = "无法确定程序路径，请右键 EXE 选择“以管理员身份运行”";
+            return;
+        }
+
+        _ = SaveSettings();
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = executablePath,
+                UseShellExecute = true,
+                Verb = "runas"
+            });
+            Application.Exit();
+        }
+        catch (Win32Exception exception) when (exception.NativeErrorCode == 1223)
+        {
+            _statusLabel.Text = "已取消管理员权限请求，程序继续以普通权限运行";
+        }
+        catch (Exception exception)
+        {
+            _statusLabel.Text = $"无法以管理员身份重启：{exception.Message}";
+        }
+    }
+
+    private void UpdateStartButtonIdleText()
+    {
+        if (!_isMonitoring && !_isCountingDown)
+        {
+            _startButton.Text = $"开始监控（{SelectedHotkey}）";
+        }
+    }
+
+    private void UpdateHotkeyRegistration()
+    {
+        if (!IsHandleCreated || _hotkeyCombo.SelectedIndex < 0)
+        {
+            return;
+        }
+
+        if (_hotkeyRegistered)
+        {
+            _ = NativeMethods.UnregisterHotKey(Handle, StartHotkeyId);
+            _hotkeyRegistered = false;
+        }
+
+        _hotkeyRegistered = NativeMethods.RegisterHotKey(
+            Handle,
+            StartHotkeyId,
+            0,
+            (uint)SelectedHotkey
+        );
+        _hotkeyStatusLabel.Text = _hotkeyRegistered
+            ? "全局快捷键，可开始或停止监控"
+            : "快捷键被其他软件占用，请换一个";
+        _hotkeyStatusLabel.ForeColor = _hotkeyRegistered
+            ? SystemColors.GrayText
+            : Color.Firebrick;
+        UpdateStartButtonIdleText();
     }
 
     private void HandleFormKeyDown(object? sender, KeyEventArgs eventArgs)
@@ -852,8 +1117,38 @@ internal sealed class MainForm : Form
         }
     }
 
+    protected override void OnHandleCreated(EventArgs eventArgs)
+    {
+        base.OnHandleCreated(eventArgs);
+        UpdateHotkeyRegistration();
+    }
+
+    protected override void WndProc(ref Message message)
+    {
+        if (message.Msg == NativeMethods.WM_HOTKEY && message.WParam.ToInt32() == StartHotkeyId)
+        {
+            ToggleMonitoring();
+            return;
+        }
+        base.WndProc(ref message);
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs eventArgs)
+    {
+        if (!SaveSettings())
+        {
+            _statusLabel.Text = "设置保存失败";
+        }
+        base.OnFormClosing(eventArgs);
+    }
+
     protected override void OnFormClosed(FormClosedEventArgs eventArgs)
     {
+        if (_hotkeyRegistered && IsHandleCreated)
+        {
+            _ = NativeMethods.UnregisterHotKey(Handle, StartHotkeyId);
+            _hotkeyRegistered = false;
+        }
         _lifetimeCancellation.Cancel();
         CancelPendingClick();
         CancelClickSequence();

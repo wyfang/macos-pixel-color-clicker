@@ -20,7 +20,11 @@ internal sealed class ColorTargetRowControl : UserControl
     internal event EventHandler? DeleteRequested;
     internal event EventHandler? PickRequested;
 
-    internal ColorTargetRowControl(string initialColor = "#66D169")
+    internal ColorTargetRowControl(
+        string initialColor = "#66D169",
+        int delayMilliseconds = 0,
+        int clickCount = 1,
+        int intervalMilliseconds = 100)
     {
         Height = 38;
         Width = 680;
@@ -69,7 +73,7 @@ internal sealed class ColorTargetRowControl : UserControl
         {
             Minimum = 0,
             Maximum = 60_000,
-            Value = 0,
+            Value = Math.Clamp(delayMilliseconds, 0, 60_000),
             Width = 78,
             ThousandsSeparator = true,
             TextAlign = HorizontalAlignment.Right,
@@ -87,7 +91,7 @@ internal sealed class ColorTargetRowControl : UserControl
         {
             Minimum = 1,
             Maximum = 100,
-            Value = 1,
+            Value = Math.Clamp(clickCount, 1, 100),
             Width = 54,
             TextAlign = HorizontalAlignment.Right,
             Margin = new Padding(0, 3, 2, 0)
@@ -104,7 +108,7 @@ internal sealed class ColorTargetRowControl : UserControl
         {
             Minimum = 0,
             Maximum = 60_000,
-            Value = 100,
+            Value = Math.Clamp(intervalMilliseconds, 0, 60_000),
             Width = 72,
             ThousandsSeparator = true,
             TextAlign = HorizontalAlignment.Right,
@@ -172,6 +176,14 @@ internal sealed class ColorTargetRowControl : UserControl
         target = default;
         return false;
     }
+
+    internal ColorTargetSetting CreateSetting() => new()
+    {
+        Color = ColorText,
+        DelayMilliseconds = DelayMilliseconds,
+        ClickCount = ClickCount,
+        IntervalMilliseconds = IntervalMilliseconds
+    };
 
     private void UpdatePreview()
     {
